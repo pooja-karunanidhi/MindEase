@@ -1,0 +1,8 @@
+{
+  "name": "MindEase Counselling",
+  "description": "A comprehensive mental health counselling management system connecting users with verified professional doctors for secure, real-time therapy sessions.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
