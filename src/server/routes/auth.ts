@@ -27,16 +27,21 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({ message: 'User registered successfully' });
   } catch (error: any) {
+    console.error('Registration error details:', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    });
     if (error.code === '23505') { // PostgreSQL unique constraint violation
       return res.status(400).json({ error: 'Email already exists' });
     }
-    console.error('Registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
+  console.log(`Login attempt for: ${email}`);
 
   try {
     const userRes = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -65,9 +70,22 @@ router.post('/login', async (req, res) => {
         doctorProfile
       }
     });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+  } catch (error: any) {
+    console.error('Login error details:', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    });
+    
+    let errorMessage = 'Internal server error';
+    if (error.message.includes('DATABASE_URL') || error.message.includes('connection') || error.message.includes('ECONNREFUSED')) {
+      errorMessage = 'Database connection failed. Please check your DATABASE_URL environment variable.';
+    }
+    
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
+    });
   }
 });
 

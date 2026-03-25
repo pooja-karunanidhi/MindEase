@@ -3,6 +3,25 @@ import pool from '../db.js';
 
 const router = express.Router();
 
+// Health check route
+router.get('/health', async (req, res) => {
+  try {
+    const dbRes = await pool.query('SELECT NOW()');
+    res.json({ status: 'ok', db: 'connected', time: dbRes.rows[0].now });
+  } catch (error: any) {
+    res.status(500).json({ status: 'error', db: 'disconnected', error: error.message });
+  }
+});
+
+// Temporary debug route to check if DATABASE_URL is present
+router.get('/debug/env', (req, res) => {
+  res.json({
+    hasDatabaseUrl: !!process.env.DATABASE_URL,
+    nodeEnv: process.env.NODE_ENV,
+    isVercel: !!process.env.VERCEL
+  });
+});
+
 // Get all approved doctors
 router.get('/doctors', async (req, res) => {
   const { specialization } = req.query;

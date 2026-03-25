@@ -7,16 +7,39 @@ dotenv.config();
 const { Pool } = pg;
 
 // Use DATABASE_URL from environment variables (set in Vercel)
+if (!process.env.DATABASE_URL) {
+  console.error('CRITICAL ERROR: DATABASE_URL environment variable is missing.');
+} else {
+  const prefix = process.env.DATABASE_URL.substring(0, 10);
+  console.log(`DATABASE_URL is present (starts with: ${prefix}...). Attempting to connect...`);
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: process.env.DATABASE_URL?.includes('supabase.co') || process.env.NODE_ENV === 'production' 
+    ? { rejectUnauthorized: false } 
+    : false,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  max: 20
 });
 
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+});
+
+const SEED_PASSWORD_HASH = bcrypt.hashSync('password123', 10);
+
 export const initDb = async () => {
-  const client = await pool.connect();
+  if (!process.env.DATABASE_URL) return;
+  
+  console.log('Initializing database...');
+  let client;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
     
+    console.log('Creating tables...');
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -105,7 +128,7 @@ export const initDb = async () => {
     `);
 
     // Seed initial data
-    const hashedPass = await bcrypt.hash('password123', 10);
+    const hashedPass = SEED_PASSWORD_HASH;
 
     const ensureUser = async (email: string, name: string, role: string) => {
       const res = await client.query('SELECT id FROM users WHERE email = $1', [email]);
@@ -150,11 +173,12 @@ export const initDb = async () => {
     }
 
     await client.query('COMMIT');
+    console.log('Database initialization complete.');
   } catch (e) {
-    await client.query('ROLLBACK');
+    if (client) await client.query('ROLLBACK');
     console.error('Database initialization error:', e);
   } finally {
-    client.release();
+    if (client) client.release();
   }
 };
 

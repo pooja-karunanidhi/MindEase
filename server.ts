@@ -61,7 +61,12 @@ wss.on("connection", (ws) => {
 
 // Vite middleware for development
 async function setupVite() {
-  await initDb();
+  try {
+    await initDb();
+  } catch (err) {
+    console.error("Database initialization failed:", err);
+  }
+  
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
