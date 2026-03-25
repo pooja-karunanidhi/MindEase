@@ -13,53 +13,53 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
-  const app = express();
-  const server = http.createServer(app);
-  const PORT = 3000;
+const app = express();
+const server = http.createServer(app);
+const PORT = 3000;
 
-  app.use(express.json());
+app.use(express.json());
 
-  // API Routes
-  app.use("/api/auth", authRouter);
-  app.use("/api", apiRouter);
+// API Routes
+app.use("/api/auth", authRouter);
+app.use("/api", apiRouter);
 
-  // WebSocket Setup
-  const wss = new WebSocketServer({ server });
+// WebSocket Setup
+const wss = new WebSocketServer({ server });
+
+// Map to track which appointmentId each client is in
+const clientRooms = new Map<any, string>();
+
+wss.on("connection", (ws) => {
+  console.log("Client connected");
   
-  // Map to track which appointmentId each client is in
-  const clientRooms = new Map<any, string>();
+  ws.on("message", (message) => {
+    try {
+      const data = JSON.parse(message.toString());
+      const { type, appointmentId } = data;
 
-  wss.on("connection", (ws) => {
-    console.log("Client connected");
-    
-    ws.on("message", (message) => {
-      try {
-        const data = JSON.parse(message.toString());
-        const { type, appointmentId } = data;
-
-        if (type === 'join') {
-          clientRooms.set(ws, appointmentId);
-          return;
-        }
-
-        // Broadcast to all clients who are in the same appointment
-        wss.clients.forEach((client) => {
-          if (client.readyState === 1 && clientRooms.get(client) === appointmentId) {
-            client.send(JSON.stringify(data));
-          }
-        });
-      } catch (err) {
-        console.error("WS Message Error:", err);
+      if (type === 'join') {
+        clientRooms.set(ws, appointmentId);
+        return;
       }
-    });
 
-    ws.on("close", () => {
-      clientRooms.delete(ws);
-    });
+      // Broadcast to all clients who are in the same appointment
+      wss.clients.forEach((client) => {
+        if (client.readyState === 1 && clientRooms.get(client) === appointmentId) {
+          client.send(JSON.stringify(data));
+        }
+      });
+    } catch (err) {
+      console.error("WS Message Error:", err);
+    }
   });
 
-  // Vite middleware for development
+  ws.on("close", () => {
+    clientRooms.delete(ws);
+  });
+});
+
+// Vite middleware for development
+async function setupVite() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -72,10 +72,14 @@ async function startServer() {
       res.sendFile(path.join(__dirname, "dist", "index.html"));
     });
   }
+}
 
+setupVite();
+
+if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+export default app;
