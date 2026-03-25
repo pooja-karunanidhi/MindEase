@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { authRouter } from "./src/server/routes/auth.js";
 import { apiRouter } from "./src/server/routes/api.js";
+import pool, { initDb } from "./src/server/db.js";
 
 dotenv.config();
 
@@ -60,6 +61,7 @@ wss.on("connection", (ws) => {
 
 // Vite middleware for development
 async function setupVite() {
+  await initDb();
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
