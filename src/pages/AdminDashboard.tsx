@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { motion } from 'motion/react';
 import { ShieldCheck, Users, UserCheck, AlertTriangle, TrendingUp, Check, X, Loader2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 export function AdminDashboard() {
-  const { token } = useAuth();
+  const { user } = useAuth();
   const [pendingDoctors, setPendingDoctors] = useState<any[]>([]);
   const [stats, setStats] = useState({ users: 0, doctors: 0, appointments: 0 });
   const [isLoading, setIsLoading] = useState(true);
@@ -16,35 +17,60 @@ export function AdminDashboard() {
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('/api/admin/pending-doctors', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const pending = await response.json();
-      setPendingDoctors(pending);
+      // Fetch pending doctors
+      const { data: pending, error: pendingError } = await supabase
+        .from('doctor_profiles')
+        .select(`
+          *,
+          profiles:id(id, name, email)
+        `)
+        .eq('is_approved', false);
+
+      if (pendingError) throw pendingError;
       
+      const mappedPending = pending.map(p => ({
+        ...p,
+        id: p.profiles.id,
+        name: p.profiles.name,
+        email: p.profiles.email
+      }));
+      setPendingDoctors(mappedPending);
+      
+      // Fetch stats
+      const [
+        { count: userCount },
+        { count: doctorCount },
+        { count: appointmentCount }
+      ] = await Promise.all([
+        supabase.from('profiles').select('*', { count: 'exact', head: true }),
+        supabase.from('doctor_profiles').select('*', { count: 'exact', head: true }).eq('is_approved', true),
+        supabase.from('appointments').select('*', { count: 'exact', head: true })
+      ]);
+
       setStats({
-        users: 1240,
-        doctors: 85,
-        appointments: 3420
+        users: userCount || 0,
+        doctors: doctorCount || 0,
+        appointments: appointmentCount || 0
       });
     } catch (err) {
-      console.error(err);
+      console.error('Error fetching admin data:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleApprove = async (doctorId: number) => {
+  const handleApprove = async (doctorId: string) => {
     try {
-      const response = await fetch(`/api/admin/approve-doctor/${doctorId}`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        setPendingDoctors(prev => prev.filter(d => d.id !== doctorId));
-      }
+      const { error } = await supabase
+        .from('doctor_profiles')
+        .update({ is_approved: true })
+        .eq('id', doctorId);
+
+      if (error) throw error;
+      
+      setPendingDoctors(prev => prev.filter(d => d.id !== doctorId));
     } catch (err) {
-      console.error(err);
+      console.error('Error approving doctor:', err);
     }
   };
 
@@ -99,7 +125,6 @@ export function AdminDashboard() {
               <thead>
                 <tr className="border-b border-stone-100 bg-stone-50/50">
                   <th className="px-8 py-4 text-sm font-bold text-stone-600">Doctor Name</th>
-                  <th className="px-8 py-4 text-sm font-bold text-stone-600">License ID</th>
                   <th className="px-8 py-4 text-sm font-bold text-stone-600">Specialization</th>
                   <th className="px-8 py-4 text-sm font-bold text-stone-600 text-right">Actions</th>
                 </tr>
@@ -108,7 +133,6 @@ export function AdminDashboard() {
                 {pendingDoctors.map((doc) => (
                   <tr key={doc.id} className="hover:bg-stone-50/30 transition-colors">
                     <td className="px-8 py-6 font-bold text-stone-900">{doc.name}</td>
-                    <td className="px-8 py-6 text-stone-600 font-mono text-sm">{doc.license_id}</td>
                     <td className="px-8 py-6 text-stone-600">{doc.specialization}</td>
                     <td className="px-8 py-6 text-right">
                       <div className="flex justify-end gap-2">

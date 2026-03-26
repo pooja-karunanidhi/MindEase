@@ -6,27 +6,28 @@ import { Calendar, Clock, MessageSquare, CheckCircle, XCircle, AlertCircle, Plus
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { GoogleGenAI } from "@google/genai";
+import { supabase } from '../lib/supabase';
 
 export function Dashboard() {
-  const { user, token } = useAuth();
+  const { user, session } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [appointments, setAppointments] = useState<any[]>([]);
   const [reviews, setReviews] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [patientProgress, setPatientProgress] = useState<any[]>([]);
-  const [schedulingId, setSchedulingId] = useState<number | null>(null);
+  const [schedulingId, setSchedulingId] = useState<string | null>(null);
   const [selectedTime, setSelectedTime] = useState('');
-  const [viewingNotesId, setViewingNotesId] = useState<number | null>(null);
-  const [viewingRemedyId, setViewingRemedyId] = useState<number | null>(null);
-  const [editingRemedyId, setEditingRemedyId] = useState<number | null>(null);
+  const [viewingNotesId, setViewingNotesId] = useState<string | null>(null);
+  const [viewingRemedyId, setViewingRemedyId] = useState<string | null>(null);
+  const [editingRemedyId, setEditingRemedyId] = useState<string | null>(null);
   const [remedyInput, setRemedyInput] = useState('');
   const [isSavingRemedy, setIsSavingRemedy] = useState(false);
-  const [loggingProgressId, setLoggingProgressId] = useState<number | null>(null);
+  const [loggingProgressId, setLoggingProgressId] = useState<string | null>(null);
   const [progressInput, setProgressInput] = useState('');
   const [isSavingProgress, setIsSavingProgress] = useState(false);
-  const [viewingProgressId, setViewingProgressId] = useState<number | null>(null);
-  const [progressLogs, setProgressLogs] = useState<{ [key: number]: any[] }>({});
+  const [viewingProgressId, setViewingProgressId] = useState<string | null>(null);
+  const [progressLogs, setProgressLogs] = useState<{ [key: string]: any[] }>({});
   const [isAICheckingIn, setIsAICheckingIn] = useState(false);
   const [aiCheckInStep, setAiCheckInStep] = useState<'idle' | 'chatting' | 'saving'>('idle');
   const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'model', text: string }[]>([]);
@@ -45,118 +46,141 @@ export function Dashboard() {
 
   useEffect(() => {
     const fetchData = async () => {
+      if (!user) return;
       try {
-        const endpoint = user?.role === 'doctor' 
-          ? `/api/doctor-appointments/${user?.id}`
-          : `/api/appointments/${user?.id}`;
-        
-        const reviewsEndpoint = user?.role === 'doctor'
-          ? `/api/doctors/${user?.id}/reviews`
-          : `/api/user-reviews/${user?.id}`;
-        
-        const [aptRes, revRes] = await Promise.all([
-          fetch(endpoint, { headers: { 'Authorization': `Bearer ${token}` } }),
-          fetch(reviewsEndpoint, { headers: { 'Authorization': `Bearer ${token}` } })
-        ]);
+        // Fetch appointments
+        const { data: aptData, error: aptError } = await supabase
+          .from('appointments')
+          .select(`
+            *,
+            user:profiles!appointments_user_id_fkey(name, email),
+            doctor:profiles!appointments_doctor_id_fkey(name, email)
+          `)
+          .or(`user_id.eq.${user.id},doctor_id.eq.${user.id}`)
+          .order('appointment_date', { ascending: false });
 
-        const aptData = await aptRes.json();
-        const revData = await revRes.json();
+        if (aptError) throw aptError;
+        setAppointments(aptData || []);
 
-        setAppointments(aptData);
-        setReviews(revData);
+        // Fetch reviews
+        const { data: revData, error: revError } = await supabase
+          .from('reviews')
+          .select('*')
+          .or(`user_id.eq.${user.id},doctor_id.eq.${user.id}`)
+          .order('created_at', { ascending: false });
 
-        if (user?.role === 'doctor') {
-          const progressRes = await fetch(`/api/doctor/patient-progress/${user?.id}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          const progressData = await progressRes.json();
-          setPatientProgress(Array.isArray(progressData) ? progressData : []);
+        if (revError) throw revError;
+        setReviews(revData || []);
+
+        if (user.role === 'doctor') {
+          // Check if doctor is approved
+          if (!user.doctorProfile?.is_approved) {
+            setIsLoading(false);
+            return;
+          }
+
+          // Fetch patient progress for doctor
+          const { data: progressData, error: progressError } = await supabase
+            .from('progress_logs')
+            .select(`
+              *,
+              user:profiles(name, email)
+            `)
+            .eq('doctor_id', user.id)
+            .order('created_at', { ascending: false });
+
+          if (progressError) {
+            console.error('Error fetching progress logs:', progressError);
+          } else {
+            setPatientProgress(progressData || []);
+          }
         }
       } catch (err) {
-        console.error(err);
+        console.error('Error fetching data:', err);
       } finally {
         setIsLoading(false);
       }
     };
 
     if (user) fetchData();
-  }, [user, token]);
+  }, [user]);
 
-  const handleStatusUpdate = async (appointmentId: number, status: string, scheduledAt?: string) => {
+  const handleStatusUpdate = async (appointmentId: string, status: string, appointmentDate?: string) => {
     try {
-      await fetch(`/api/appointments/${appointmentId}`, {
-        method: 'PATCH',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ status, scheduledAt })
-      });
-      setAppointments(prev => prev.map(a => a.id === appointmentId ? { ...a, status, scheduled_at: scheduledAt || a.scheduled_at } : a));
+      const { error } = await supabase
+        .from('appointments')
+        .update({ status, appointment_date: appointmentDate || undefined })
+        .eq('id', appointmentId);
+
+      if (error) throw error;
+
+      setAppointments(prev => prev.map(a => a.id === appointmentId ? { ...a, status, appointment_date: appointmentDate || a.appointment_date } : a));
       setSchedulingId(null);
     } catch (err) {
-      console.error(err);
+      console.error('Error updating status:', err);
     }
   };
 
-  const handleSaveRemedy = async (appointmentId: number) => {
+  const handleSaveRemedy = async (appointmentId: string) => {
     setIsSavingRemedy(true);
     try {
-      await fetch(`/api/appointments/${appointmentId}`, {
-        method: 'PATCH',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ remedyNotes: remedyInput })
-      });
+      const { error } = await supabase
+        .from('appointments')
+        .update({ remedy_notes: remedyInput })
+        .eq('id', appointmentId);
+
+      if (error) throw error;
+
       setAppointments(prev => prev.map(a => a.id === appointmentId ? { ...a, remedy_notes: remedyInput } : a));
       setEditingRemedyId(null);
       setRemedyInput('');
     } catch (err) {
-      console.error(err);
+      console.error('Error saving remedy:', err);
     } finally {
       setIsSavingRemedy(false);
     }
   };
 
-  const handleSaveProgress = async (appointmentId: number) => {
+  const handleSaveProgress = async (appointmentId: string) => {
     setIsSavingProgress(true);
     try {
-      await fetch('/api/progress-logs', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ userId: user?.id, appointmentId, logText: progressInput })
-      });
+      const { error } = await supabase
+        .from('progress_logs')
+        .insert({
+          user_id: user?.id,
+          log_text: progressInput,
+          doctor_id: appointments.find(a => a.id === appointmentId)?.doctor_id
+        });
+
+      if (error) throw error;
+
       setLoggingProgressId(null);
       setProgressInput('');
-      // Refresh logs if currently viewing
-      if (viewingProgressId === appointmentId) {
-        fetchProgressLogs(appointmentId);
-      }
+      // Refresh logs
+      fetchProgressLogs(appointmentId);
     } catch (err) {
-      console.error(err);
+      console.error('Error saving progress:', err);
     } finally {
       setIsSavingProgress(false);
     }
   };
 
-  const fetchProgressLogs = async (appointmentId: number) => {
+  const fetchProgressLogs = async (appointmentId: string) => {
     try {
-      const response = await fetch(`/api/progress-logs/${appointmentId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await response.json();
-      setProgressLogs(prev => ({ ...prev, [appointmentId]: data }));
+      const { data, error } = await supabase
+        .from('progress_logs')
+        .select('*')
+        .eq('appointment_id', appointmentId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setProgressLogs(prev => ({ ...prev, [appointmentId]: data || [] }));
     } catch (err) {
-      console.error(err);
+      console.error('Error fetching progress logs:', err);
     }
   };
 
-  const toggleProgressView = (appointmentId: number) => {
+  const toggleProgressView = (appointmentId: string) => {
     if (viewingProgressId === appointmentId) {
       setViewingProgressId(null);
     } else {
@@ -221,7 +245,7 @@ export function Dashboard() {
     }
   };
 
-  const saveAICheckIn = async (appointmentId: number) => {
+  const saveAICheckIn = async (appointmentId: string) => {
     const summary = aiMessages.map(m => `${m.role === 'user' ? 'Patient' : 'AI'}: ${m.text}`).join('\n');
     setProgressInput(summary);
     await handleSaveProgress(appointmentId);
@@ -231,6 +255,35 @@ export function Dashboard() {
   };
 
   if (isLoading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600"></div></div>;
+
+  if (user?.role === 'doctor' && !user.doctorProfile?.is_approved) {
+    return (
+      <div className="max-w-4xl mx-auto py-20 px-6 text-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white p-12 rounded-[3rem] border border-stone-200 shadow-xl space-y-6"
+        >
+          <div className="w-20 h-20 bg-amber-50 rounded-full flex items-center justify-center mx-auto">
+            <Shield className="h-10 w-10 text-amber-500" />
+          </div>
+          <h1 className="text-3xl font-bold text-stone-900">Verification Pending</h1>
+          <p className="text-stone-600 max-w-md mx-auto leading-relaxed">
+            Thank you for joining our platform. Your professional credentials are currently being verified by our admin team. 
+            This usually takes 24-48 hours.
+          </p>
+          <div className="pt-6">
+            <Link 
+              to="/" 
+              className="inline-flex items-center gap-2 px-8 py-4 bg-stone-900 text-white rounded-2xl font-bold hover:bg-stone-800 transition-all"
+            >
+              Back to Home
+            </Link>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-10">
@@ -320,11 +373,17 @@ export function Dashboard() {
                 <div className="flex items-center gap-4">
                   <button 
                     onClick={async () => {
-                      const progressRes = await fetch(`/api/doctor/patient-progress/${user?.id}`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                      });
-                      const progressData = await progressRes.json();
-                      setPatientProgress(Array.isArray(progressData) ? progressData : []);
+                      const { data: progressData, error: progressError } = await supabase
+                        .from('progress_logs')
+                        .select('*, user:profiles(name, email)')
+                        .eq('doctor_id', user?.id)
+                        .order('created_at', { ascending: false });
+
+                      if (progressError) {
+                        console.error('Error refreshing progress:', progressError);
+                        return;
+                      }
+                      setPatientProgress(progressData || []);
                     }}
                     className="p-2 hover:bg-stone-100 rounded-xl transition-colors group"
                     title="Refresh Progress"
@@ -357,14 +416,14 @@ export function Dashboard() {
                             <User className="h-5 w-5 text-emerald-600" />
                           </div>
                           <div>
-                            <h4 className="font-bold text-stone-900">{log.user_name}</h4>
+                            <h4 className="font-bold text-stone-900">{log.user?.name || 'Anonymous'}</h4>
                             <p className="text-[10px] text-stone-400 font-medium">
-                              {format(new Date(log.created_at), 'MMM d, h:mm a')}
+                              {log.created_at ? format(new Date(log.created_at), 'MMM d, h:mm a') : 'Unknown Date'}
                             </p>
                           </div>
                         </div>
                         <div className="px-2 py-0.5 bg-stone-50 text-stone-400 rounded-full text-[8px] font-bold uppercase tracking-widest">
-                          Session: {format(new Date(log.appointment_date), 'MMM d')}
+                          Session: {log.created_at ? format(new Date(log.created_at), 'MMM d') : 'N/A'}
                         </div>
                       </div>
                       <div className="p-4 bg-stone-50 rounded-xl border border-stone-100">
@@ -411,12 +470,12 @@ export function Dashboard() {
                         </div>
                         <div>
                           <h3 className="font-bold text-stone-900">
-                            {user?.role === 'doctor' ? apt.user_name : apt.doctor_name}
+                            {user?.role === 'doctor' ? apt.user?.name : apt.doctor?.name}
                           </h3>
                           <div className="flex items-center gap-3 text-sm text-stone-500 mt-1">
                             <span className="flex items-center gap-1">
                               <Clock className="h-3.5 w-3.5" />
-                              {format(new Date(apt.scheduled_at), 'MMM d, h:mm a')}
+                              {apt.appointment_date ? format(new Date(apt.appointment_date), 'MMM d, h:mm a') : 'TBD'}
                             </span>
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                               apt.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
@@ -470,7 +529,11 @@ export function Dashboard() {
                             <button
                               onClick={() => {
                                 setSchedulingId(apt.id);
-                                setSelectedTime(format(new Date(apt.scheduled_at), "yyyy-MM-dd'T'HH:mm"));
+                                if (apt.appointment_date) {
+                                  setSelectedTime(format(new Date(apt.appointment_date), "yyyy-MM-dd'T'HH:mm"));
+                                } else {
+                                  setSelectedTime(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
+                                }
                               }}
                               className="px-4 py-2 bg-stone-100 text-stone-600 rounded-xl text-sm font-bold hover:bg-stone-200 transition-all"
                             >
@@ -621,9 +684,11 @@ export function Dashboard() {
                         </div>
                         <div>
                           <h4 className="font-bold text-stone-900">
-                            {user?.role === 'doctor' ? apt.user_name : `Dr. ${apt.doctor_name}`}
+                            {user?.role === 'doctor' ? apt.user?.name : `Dr. ${apt.doctor?.name}`}
                           </h4>
-                          <p className="text-xs text-stone-400">{format(new Date(apt.scheduled_at), 'MMM d, yyyy')}</p>
+                          <p className="text-xs text-stone-400">
+                            {apt.appointment_date ? format(new Date(apt.appointment_date), 'MMM d, yyyy') : 'Unknown Date'}
+                          </p>
                         </div>
                       </div>
                       
@@ -835,12 +900,11 @@ export function Dashboard() {
               </div>
             )}
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
 
-    {/* Sidebar Widgets */}
-        <div className="space-y-8">
+      {/* Sidebar Widgets */}
+      <div className="space-y-8">
           {/* Patient Progress Summary (Doctor Only) */}
           {user?.role === 'doctor' && (
             <div className="p-8 bg-stone-900 rounded-[2.5rem] text-white space-y-6">
@@ -854,7 +918,7 @@ export function Dashboard() {
                 ) : (
                   patientProgress.slice(0, 3).map((log) => (
                     <div key={log.id} className="space-y-1">
-                      <p className="text-sm font-bold">{log.user_name}</p>
+                      <p className="text-sm font-bold">{log.user?.name || 'Patient'}</p>
                       <p className="text-xs text-stone-400 line-clamp-1">{log.log_text}</p>
                     </div>
                   ))

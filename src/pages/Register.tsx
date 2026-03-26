@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Mail, Lock, User, Briefcase, Award, FileText, AlertCircle, Loader2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 export function Register() {
   const [role, setRole] = useState<'user' | 'doctor'>('user');
@@ -23,37 +24,80 @@ export function Register() {
     setIsLoading(true);
     setError('');
 
-    const payload = {
-      email: formData.email,
-      password: formData.password,
-      name: formData.name,
-      role,
-      ...(role === 'doctor' && {
-        doctorInfo: {
-          licenseId: formData.licenseId,
-          specialization: formData.specialization,
-          experience: parseInt(formData.experience),
-          bio: formData.bio
-        }
-      })
-    };
+    if (formData.password.length < 6) {
+      setError('Password must be at least 6 characters long');
+      setIsLoading(false);
+      return;
+    }
 
     try {
-      const response = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      console.log('Attempting sign up with email:', formData.email);
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: formData.email,
+        password: formData.password,
+        options: {
+          data: {
+            name: formData.name,
+            role: role,
+          }
+        }
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
-        navigate('/login');
-      } else {
-        setError(data.error || 'Registration failed');
+      if (authError) {
+        console.error('Supabase Auth Error Details:', authError);
+        throw authError;
       }
-    } catch (err) {
-      setError('Something went wrong. Please try again.');
+      
+      if (!authData.user) {
+        throw new Error('No user returned from sign up. Please check if email confirmation is required.');
+      }
+
+      console.log('User created successfully:', authData.user.id);
+      
+      // 2. Create/Update profile in 'profiles' table
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .upsert({
+          id: authData.user.id,
+          name: formData.name,
+          role: role,
+          email: formData.email,
+        });
+
+      if (profileError) {
+        console.error('Error updating profile:', profileError);
+      }
+
+      // 3. If doctor, create entry in 'doctor_profiles' table
+      if (role === 'doctor') {
+        const { error: doctorError } = await supabase
+          .from('doctor_profiles')
+          .insert({
+            id: authData.user.id,
+            specialization: formData.specialization,
+            license_id: formData.licenseId,
+            experience: parseInt(formData.experience) || 0,
+            bio: formData.bio,
+            is_approved: false
+          });
+
+        if (doctorError) {
+          console.error('Error creating doctor profile:', doctorError);
+        }
+      }
+
+      navigate('/login', { state: { message: 'Registration successful! Please sign in.' } });
+    } catch (err: any) {
+      console.error('Registration error:', err);
+      let friendlyMessage = err.message || 'Registration failed';
+      
+      if (friendlyMessage.includes('rate limit')) {
+        friendlyMessage = 'Too many registration attempts. Please wait a few minutes and try again.';
+      } else if (friendlyMessage.includes('invalid') && friendlyMessage.toLowerCase().includes('email')) {
+        friendlyMessage = 'The email address provided is invalid. Please check for typos or try a different email.';
+      }
+      
+      setError(friendlyMessage);
     } finally {
       setIsLoading(false);
     }

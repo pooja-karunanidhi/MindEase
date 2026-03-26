@@ -1,16 +1,25 @@
-import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { Mail, Lock, AlertCircle, Loader2 } from 'lucide-react';
+import { Mail, Lock, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 export function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (location.state?.message) {
+      setSuccess(location.state.message);
+      // Clear state so it doesn't persist on refresh
+      window.history.replaceState({}, document.title);
+    }
+  }, [location]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -18,22 +27,29 @@ export function Login() {
     setError('');
 
     try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+      const { error: sbError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
-        login(data.token, data.user);
-        navigate('/dashboard');
-      } else {
-        setError(data.error || 'Login failed');
+      if (sbError) throw sbError;
+      
+      navigate('/dashboard');
+    } catch (err: any) {
+      console.error('Login error:', err);
+      let friendlyMessage = err.message || 'Login failed';
+      
+      if (friendlyMessage.includes('rate limit')) {
+        friendlyMessage = 'Too many login attempts. Please wait a few minutes and try again.';
+      } else if (friendlyMessage.includes('invalid') && friendlyMessage.toLowerCase().includes('email')) {
+        friendlyMessage = 'The email address provided is invalid. Please check for typos or try a different email.';
+      } else if (friendlyMessage.includes('Email not confirmed')) {
+        friendlyMessage = 'Your email has not been confirmed yet. Please check your inbox for a verification link, or disable "Confirm email" in your Supabase Auth settings to log in immediately.';
+      } else if (friendlyMessage.includes('Invalid login credentials')) {
+        friendlyMessage = 'Incorrect email or password. Please try again.';
       }
-    } catch (err) {
-      setError('Something went wrong. Please try again.');
+      
+      setError(friendlyMessage);
     } finally {
       setIsLoading(false);
     }
@@ -50,6 +66,13 @@ export function Login() {
           <h1 className="text-3xl font-bold text-stone-900">Welcome Back</h1>
           <p className="text-stone-500 mt-2">Sign in to continue your journey</p>
         </div>
+
+        {success && (
+          <div className="mb-6 p-4 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center gap-3 text-emerald-600 text-sm">
+            <CheckCircle2 className="h-5 w-5 shrink-0" />
+            <p>{success}</p>
+          </div>
+        )}
 
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl flex items-center gap-3 text-red-600 text-sm">

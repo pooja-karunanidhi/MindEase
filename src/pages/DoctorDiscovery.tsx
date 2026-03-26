@@ -2,13 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { motion } from 'motion/react';
 import { Search, Filter, Star, Award, Briefcase, Calendar, CheckCircle2, Loader2, MessageSquare, X } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 export function DoctorDiscovery() {
-  const { token, user } = useAuth();
+  const { user } = useAuth();
   const [doctors, setDoctors] = useState<any[]>([]);
   const [specialization, setSpecialization] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [bookingStatus, setBookingStatus] = useState<{ [key: number]: string }>({});
+  const [bookingStatus, setBookingStatus] = useState<{ [key: string]: string }>({});
   const [selectedDoctorReviews, setSelectedDoctorReviews] = useState<any[] | null>(null);
   const [isReviewsLoading, setIsReviewsLoading] = useState(false);
   const [bookingDoctor, setBookingDoctor] = useState<any | null>(null);
@@ -26,38 +27,65 @@ export function DoctorDiscovery() {
   const fetchDoctors = async () => {
     setIsLoading(true);
     try {
-      const url = specialization 
-        ? `/api/doctors?specialization=${specialization}`
-        : '/api/doctors';
-      const response = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await response.json();
-      setDoctors(data);
+      let query = supabase
+        .from('doctor_profiles')
+        .select(`
+          *,
+          profiles:id(id, name, email)
+        `)
+        .eq('is_approved', true);
+
+      if (specialization) {
+        query = query.eq('specialization', specialization);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      // Map to match existing structure
+      const mappedDoctors = data.map(d => ({
+        ...d,
+        id: d.profiles.id,
+        name: d.profiles.name,
+        email: d.profiles.email
+      }));
+
+      setDoctors(mappedDoctors);
     } catch (err) {
-      console.error(err);
+      console.error('Error fetching doctors:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const fetchReviews = async (doctorId: number) => {
+  const fetchReviews = async (doctorId: string) => {
     setIsReviewsLoading(true);
     try {
-      const response = await fetch(`/api/doctors/${doctorId}/reviews`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await response.json();
-      setSelectedDoctorReviews(data);
+      const { data, error } = await supabase
+        .from('reviews')
+        .select(`
+          *,
+          user:profiles!reviews_user_id_fkey(name)
+        `)
+        .eq('doctor_id', doctorId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      
+      const mappedReviews = data.map(r => ({
+        ...r,
+        user_name: (r as any).user?.name || 'Anonymous'
+      }));
+      setSelectedDoctorReviews(mappedReviews);
     } catch (err) {
-      console.error(err);
+      console.error('Error fetching reviews:', err);
     } finally {
       setIsReviewsLoading(false);
     }
   };
 
   const handleBook = async () => {
-    if (!bookingDoctor) return;
+    if (!bookingDoctor || !user) return;
     const doctorId = bookingDoctor.id;
     setBookingStatus({ ...bookingStatus, [doctorId]: 'booking' });
     
@@ -69,33 +97,30 @@ Specific concerns: ${intakeNotes.specificConcerns}
     `.trim();
 
     try {
-      const response = await fetch('/api/appointments', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          userId: user?.id,
-          doctorId,
-          scheduledAt: new Date(Date.now() + 86400000).toISOString(), // Tomorrow
-          notes
-        })
-      });
+      const { error } = await supabase
+        .from('appointments')
+        .insert({
+          user_id: user.id,
+          doctor_id: doctorId,
+          appointment_date: new Date(Date.now() + 86400000).toISOString(), // Tomorrow
+          notes,
+          status: 'pending'
+        });
 
-      if (response.ok) {
-        setBookingStatus({ ...bookingStatus, [doctorId]: 'success' });
-        setBookingDoctor(null);
-        setIntakeNotes({ reason: '', duration: '', previousTherapy: '', specificConcerns: '' });
-        setTimeout(() => {
-          setBookingStatus(prev => {
-            const newState = { ...prev };
-            delete newState[doctorId];
-            return newState;
-          });
-        }, 3000);
-      }
+      if (error) throw error;
+
+      setBookingStatus({ ...bookingStatus, [doctorId]: 'success' });
+      setBookingDoctor(null);
+      setIntakeNotes({ reason: '', duration: '', previousTherapy: '', specificConcerns: '' });
+      setTimeout(() => {
+        setBookingStatus(prev => {
+          const newState = { ...prev };
+          delete newState[doctorId];
+          return newState;
+        });
+      }, 3000);
     } catch (err) {
+      console.error('Error booking appointment:', err);
       setBookingStatus({ ...bookingStatus, [doctorId]: 'error' });
     }
   };

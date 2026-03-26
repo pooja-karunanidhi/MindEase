@@ -3,13 +3,14 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, User, Shield, Phone, Video, MoreVertical, Loader2, Star, X, CheckCircle2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 export function Chat() {
   const { appointmentId } = useParams();
-  const { user, token } = useAuth();
+  const { user } = useAuth();
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
-  const [socket, setSocket] = useState<WebSocket | null>(null);
+  const [channel, setChannel] = useState<any>(null);
   const [appointment, setAppointment] = useState<any>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [rating, setRating] = useState(0);
@@ -27,10 +28,14 @@ export function Chat() {
   useEffect(() => {
     const fetchAppointment = async () => {
       try {
-        const response = await fetch(`/api/appointments/detail/${appointmentId}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const data = await response.json();
+        const { data, error } = await supabase
+          .from('appointments')
+          .select('*')
+          .eq('id', appointmentId)
+          .single();
+
+        if (error) throw error;
+
         setAppointment(data);
         if (data.remedy_notes) {
           setRemedyNotes(data.remedy_notes);
@@ -39,18 +44,34 @@ export function Chat() {
         if (data.status === 'completed') {
           setTimeLeft(0);
         }
+
+        // Fetch initial messages
+        const { data: msgData, error: msgError } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('appointment_id', appointmentId)
+          .order('created_at', { ascending: true });
+
+        if (msgError) throw msgError;
+        setMessages(msgData.map(m => ({
+          appointmentId: m.appointment_id,
+          senderId: m.sender_id,
+          text: m.text,
+          timestamp: m.created_at
+        })));
+
       } catch (err) {
-        console.error(err);
+        console.error('Error fetching appointment:', err);
       }
     };
     fetchAppointment();
-  }, [appointmentId, token]);
+  }, [appointmentId]);
 
   useEffect(() => {
     if (!appointment || timeLeft === 0) return;
 
     const timer = setInterval(() => {
-      const start = new Date(appointment.scheduled_at).getTime();
+      const start = new Date(appointment.appointment_date).getTime();
       const end = start + 30 * 60 * 1000; // 30 minutes
       const now = new Date().getTime();
       const diff = Math.max(0, Math.floor((end - now) / 1000));
@@ -77,28 +98,23 @@ export function Chat() {
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (rating === 0) return;
+    if (rating === 0 || !user || !appointment) return;
     setIsSubmittingReview(true);
     try {
-      const response = await fetch('/api/reviews', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          appointmentId: parseInt(appointmentId!),
-          userId: user?.id,
-          doctorId: appointment.doctor_id,
+      const { error } = await supabase
+        .from('reviews')
+        .insert({
+          appointment_id: appointmentId,
+          user_id: user.id,
+          doctor_id: appointment.doctor_id,
           rating,
           comment
-        })
-      });
-      if (response.ok) {
-        setReviewSubmitted(true);
-      }
+        });
+
+      if (error) throw error;
+      setReviewSubmitted(true);
     } catch (err) {
-      console.error(err);
+      console.error('Error submitting review:', err);
     } finally {
       setIsSubmittingReview(false);
     }
@@ -109,19 +125,15 @@ export function Chat() {
     if (!remedyNotes.trim()) return;
     setIsSubmittingRemedy(true);
     try {
-      const response = await fetch(`/api/appointments/${appointmentId}`, {
-        method: 'PATCH',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ remedyNotes })
-      });
-      if (response.ok) {
-        setRemedySubmitted(true);
-      }
+      const { error } = await supabase
+        .from('appointments')
+        .update({ remedy_notes: remedyNotes })
+        .eq('id', appointmentId);
+
+      if (error) throw error;
+      setRemedySubmitted(true);
     } catch (err) {
-      console.error(err);
+      console.error('Error submitting remedy:', err);
     } finally {
       setIsSubmittingRemedy(false);
     }
@@ -129,54 +141,48 @@ export function Chat() {
 
   const handleFinishSession = async () => {
     try {
-      await fetch(`/api/appointments/${appointmentId}`, {
-        method: 'PATCH',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ status: 'completed' })
-      });
+      const { error } = await supabase
+        .from('appointments')
+        .update({ status: 'completed' })
+        .eq('id', appointmentId);
+
+      if (error) throw error;
       
-      // Notify other party via socket
-      if (socket) {
-        socket.send(JSON.stringify({
-          type: 'session_ended',
-          appointmentId,
-          senderId: user?.id
-        }));
+      // Notify other party via channel
+      if (channel) {
+        channel.send({
+          type: 'broadcast',
+          event: 'session_ended',
+          payload: { appointmentId }
+        });
       }
       
       setTimeLeft(0);
       setShowFinishConfirm(false);
     } catch (err) {
-      console.error(err);
+      console.error('Error finishing session:', err);
     }
   };
 
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+    if (!appointmentId) return;
 
-    ws.onopen = () => {
-      console.log('Connected to chat');
-      ws.send(JSON.stringify({ type: 'join', appointmentId }));
+    const newChannel = supabase.channel(`chat:${appointmentId}`);
+
+    newChannel
+      .on('broadcast', { event: 'message' }, ({ payload }) => {
+        setMessages((prev) => [...prev, payload]);
+      })
+      .on('broadcast', { event: 'session_ended' }, () => {
+        setTimeLeft(0);
+      })
+      .subscribe();
+
+    setChannel(newChannel);
+
+    return () => {
+      supabase.removeChannel(newChannel);
     };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.appointmentId === appointmentId) {
-        if (data.type === 'session_ended') {
-          setTimeLeft(0);
-          return;
-        }
-        setMessages((prev) => [...prev, data]);
-      }
-    };
-
-    setSocket(ws);
-
-    return () => ws.close();
   }, [appointmentId]);
 
   useEffect(() => {
@@ -185,20 +191,43 @@ export function Chat() {
     }
   }, [messages]);
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !socket) return;
+    if (!input.trim() || !channel || !user) return;
 
     const messageData = {
       appointmentId,
-      senderId: user?.id,
-      senderName: user?.name,
+      senderId: user.id,
+      senderName: user.name,
       text: input,
       timestamp: new Date().toISOString()
     };
 
-    socket.send(JSON.stringify(messageData));
-    setInput('');
+    try {
+      // Broadcast for real-time
+      await channel.send({
+        type: 'broadcast',
+        event: 'message',
+        payload: messageData
+      });
+
+      // Persist to database
+      const { error } = await supabase
+        .from('messages')
+        .insert({
+          appointment_id: appointmentId,
+          sender_id: user.id,
+          text: input
+        });
+
+      if (error) throw error;
+
+      setMessages((prev) => [...prev, messageData]);
+      setInput('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+      // Optionally show a toast or error message to the user
+    }
   };
 
   return (
@@ -219,8 +248,8 @@ export function Chat() {
                 </div>
               ) : (
                 <div className="text-stone-400">
-                  {appointment && new Date(appointment.scheduled_at) > new Date() && timeLeft !== 0
-                    ? `Starts at ${new Date(appointment.scheduled_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                  {appointment && new Date(appointment.appointment_date) > new Date() && timeLeft !== 0
+                    ? `Starts at ${new Date(appointment.appointment_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
                     : 'Session Ended'}
                 </div>
               )}

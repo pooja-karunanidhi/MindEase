@@ -4,13 +4,71 @@ import { useAuth } from '../contexts/AuthContext';
 import { Heart, User, LogOut, Menu, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+import { supabase } from '../lib/supabase';
+
+function ConnectionStatus() {
+  const [status, setStatus] = React.useState<'checking' | 'connected' | 'error'>('checking');
+  const [errorMsg, setErrorMsg] = React.useState('');
+
+  React.useEffect(() => {
+    async function check() {
+      try {
+        const { error } = await supabase.from('profiles').select('id').limit(1);
+        if (error) {
+          const message = error.message || '';
+          // PGRST116 means table exists but is empty, 42P01 means table doesn't exist
+          if (error.code === 'PGRST116' || error.code === '42P01' || message.includes('relation')) {
+            setStatus('connected');
+          } else {
+            setStatus('error');
+            setErrorMsg(`${message || 'Unknown Error'} (Code: ${error.code || 'N/A'})`);
+          }
+        } else {
+          setStatus('connected');
+        }
+      } catch (err: any) {
+        setStatus('error');
+        setErrorMsg(err.message || (typeof err === 'object' ? JSON.stringify(err) : String(err)));
+      }
+    }
+    check();
+  }, []);
+
+  if (status === 'error') {
+    return (
+      <div className="bg-red-600 text-white text-center py-2 px-4 text-xs font-bold animate-pulse">
+        ⚠️ Supabase Connection Error: {errorMsg}. Please check your project URL and API key.
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed bottom-4 right-4 z-[100] flex flex-col items-end gap-2">
+      <button 
+        onClick={() => alert(`Supabase URL: ${import.meta.env.VITE_SUPABASE_URL}\nSupabase Key: ${import.meta.env.VITE_SUPABASE_ANON_KEY?.substring(0, 10)}...`)}
+        className="bg-stone-800 text-white text-[9px] px-2 py-1 rounded-md opacity-50 hover:opacity-100 transition-opacity"
+      >
+        Debug Config
+      </button>
+      <div className="bg-white/90 backdrop-blur-sm border border-stone-200 rounded-full px-3 py-1.5 shadow-lg flex items-center gap-2">
+        <div className={`h-2 w-2 rounded-full ${
+          status === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-stone-300 animate-pulse'
+        }`} />
+        <span className="text-[11px] font-bold text-stone-600 uppercase tracking-wider">
+          {status === 'connected' ? 'Supabase Live' : 'Syncing...'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { user, logout } = useAuth();
+  const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await signOut();
     navigate('/login');
   };
 
@@ -138,10 +196,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <p className="text-sm text-stone-500">
               © 2026 MindEase Counselling. Your mental health matters.
             </p>
-            <div className="flex gap-6">
-              <a href="#" className="text-sm text-stone-500 hover:text-emerald-600">Privacy Policy</a>
-              <a href="#" className="text-sm text-stone-500 hover:text-emerald-600">Terms of Service</a>
-              <a href="#" className="text-sm text-stone-500 hover:text-emerald-600">Emergency Help</a>
+            <div className="flex flex-col items-center md:items-end gap-2">
+              <div className="flex gap-6">
+                <a href="#" className="text-sm text-stone-500 hover:text-emerald-600">Privacy Policy</a>
+                <a href="#" className="text-sm text-stone-500 hover:text-emerald-600">Terms of Service</a>
+                <a href="#" className="text-sm text-stone-500 hover:text-emerald-600">Emergency Help</a>
+              </div>
+              <p className="text-[10px] text-stone-300">
+                Connected to: {import.meta.env.VITE_SUPABASE_URL?.substring(0, 30)}...
+              </p>
+              <ConnectionStatus />
             </div>
           </div>
         </div>
